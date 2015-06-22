@@ -1,11 +1,15 @@
 
 #include <stdio.h>
 #include <syslog.h>
+#include <stdlib.h>
+
 #include <fcntl.h>
 #include <linux/fb.h>
 #include <sys/mman.h>
 
 #include <bcm_host.h>
+
+#define FPS 15
 
 int process() {
     DISPMANX_DISPLAY_HANDLE_T display;
@@ -15,14 +19,34 @@ int process() {
     uint32_t image_prt;
     VC_RECT_T rect1;
     int ret;
+    unsigned int count = 0;
     int fbfd = 0;
+    int dpitch = 0;
+    int delay = FPS;
     char *fbp = 0;
+    char *fbdev0 = "/dev/fb0";
+    char *fbdev = "/dev/fb1";
 
     struct fb_var_screeninfo vinfo;
+    struct fb_var_screeninfo vinfo0;
     struct fb_fix_screeninfo finfo;
+    struct fb_fix_screeninfo finfo0;
 
 
     bcm_host_init();
+
+    fbp = getenv("FBDEV");
+    if (fbp) {
+       fbdev=fbp;
+       fbp=(char *)-1;
+    }
+
+    fbp = getenv("FPS");
+    if (fbp) {
+	delay = atoi(fbp);
+	delay = (delay == 0) ? FPS : delay;
+    }
+    delay = 1000000 / delay;
 
     display = vc_dispmanx_display_open(0);
     if (!display) {
@@ -34,12 +58,27 @@ int process() {
         syslog(LOG_ERR, "Unable to get primary display information");
         return -1;
     }
-    syslog(LOG_INFO, "Primary display is %d x %d", display_info.width, display_info.height);
+    syslog(LOG_INFO, "Primary display vc is %d x %d rotation %d", display_info.width, display_info.height, (display_info.transform & 3) * 90);
 
+    fbfd = open(fbdev0, O_RDWR);
+    if (fbfd < 0) {
+        syslog(LOG_ERR, "Unable to open primary display");
+        return -1;
+    }
+    if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo0)) {
+        syslog(LOG_ERR, "Unable to get primary fb display information");
+        return -1;
+    }
+    if (ioctl(fbfd, FBIOGET_VSCREENINFO, &vinfo0)) {
+        syslog(LOG_ERR, "Unable to get pirmary fb display information");
+        return -1;
+    }
+    syslog(LOG_INFO, "Primary display fb is %d x %d %dbps\n", vinfo0.xres, vinfo0.yres, vinfo0.bits_per_pixel);
+    close(fbfd);
 
-    fbfd = open("/dev/fb1", O_RDWR);
-    if (!fbfd) {
-        syslog(LOG_ERR, "Unable to open secondary display");
+    fbfd = open(fbdev, O_RDWR);
+    if (fbfd < 0) {
+        syslog(LOG_ERR, "Unable to open secondary display %s",fbdev);
         return -1;
     }
     if (ioctl(fbfd, FBIOGET_FSCREENINFO, &finfo)) {
@@ -50,9 +89,9 @@ int process() {
         syslog(LOG_ERR, "Unable to get secondary display information");
         return -1;
     }
+    syslog(LOG_INFO, "Second display %s is %d x %d %dbps\n",fbdev , vinfo.xres, vinfo.yres, vinfo.bits_per_pixel);
 
-    syslog(LOG_INFO, "Second display is %d x %d %dbps\n", vinfo.xres, vinfo.yres, vinfo.bits_per_pixel);
-
+    dpitch = vinfo.xres * vinfo.bits_per_pixel / 8;
     screen_resource = vc_dispmanx_resource_create(VC_IMAGE_RGB565, vinfo.xres, vinfo.yres, &image_prt);
     if (!screen_resource) {
         syslog(LOG_ERR, "Unable to create screen buffer");
@@ -68,15 +107,39 @@ int process() {
         ret = vc_dispmanx_resource_delete(screen_resource);
         vc_dispmanx_display_close(display);
         return -1;
+    } else {
+        syslog(LOG_INFO, "Starting Snapshotting ,delay %d",delay);
     }
 
     vc_dispmanx_rect_set(&rect1, 0, 0, vinfo.xres, vinfo.yres);
 
-    while (1) {
+    ret = 0;
+    while (ret == 0) {
         ret = vc_dispmanx_snapshot(display, screen_resource, 0);
-        vc_dispmanx_resource_read_data(screen_resource, &rect1, fbp, vinfo.xres * vinfo.bits_per_pixel / 8);
-        usleep(25 * 1000);
+        if (ret != 0) {
+		count +=1;
+		if ( count % 60 == 0 ) {
+			syslog(LOG_ERR, "Unable to snapshot %d. (%u)",ret, count);
+		}
+		// for when tvservice -o has been called - check state some how?
+		vc_dispmanx_resource_delete(screen_resource);
+		display = vc_dispmanx_display_open(0);
+		screen_resource = vc_dispmanx_resource_create(VC_IMAGE_RGB565, vinfo.xres, vinfo.yres, &image_prt);
+		sleep(1);
+		ret = 0;
+        } else {
+	     if (count > 0 ) {
+			syslog(LOG_INFO, "Snapshotting after %u attempts.",count);
+		count = 0;
+	     }
+	     ret = vc_dispmanx_resource_read_data(screen_resource, &rect1, fbp, dpitch);
+             if (ret != 0) {
+                 syslog(LOG_ERR, "Unable to read data from vc %d.",ret);
+             }
+             usleep(delay);
+        }
     }
+    syslog(LOG_INFO, "Terminating...");
 
     munmap(fbp, finfo.smem_len);
     close(fbfd);
@@ -90,6 +153,4 @@ int main(int argc, char **argv) {
 
     return process();
 }
-
-
 
