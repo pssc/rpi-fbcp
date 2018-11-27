@@ -23,9 +23,10 @@ int process() {
     int fbfd = 0;
     int dpitch = 0;
     int delay = FPS;
-    char *fbp = 0;
-    char *fbdev0 = "/dev/fb0";
+    char *fbp = NULL;
+    char *fps = NULL;
     char *fbdev = "/dev/fb1";
+    char *fbdev0 = "/dev/fb0";
 
     struct fb_var_screeninfo vinfo;
     struct fb_var_screeninfo vinfo0;
@@ -41,9 +42,9 @@ int process() {
        fbp=(char *)-1;
     }
 
-    fbp = getenv("FPS");
-    if (fbp) {
-	delay = atoi(fbp);
+    fps = getenv("FPS");
+    if (fps) {
+	delay = atoi(fps);
 	delay = (delay == 0) ? FPS : delay;
     }
     delay = 1000000 / delay;
@@ -102,13 +103,13 @@ int process() {
 
     fbp = (char*) mmap(0, finfo.smem_len, PROT_READ | PROT_WRITE, MAP_SHARED, fbfd, 0);
     if (fbp <= 0) {
-        syslog(LOG_ERR, "Unable to create mamory mapping");
+        syslog(LOG_ERR, "Unable to create memory mapping");
         close(fbfd);
         ret = vc_dispmanx_resource_delete(screen_resource);
         vc_dispmanx_display_close(display);
         return -1;
     } else {
-        syslog(LOG_INFO, "Starting Snapshotting ,delay %d",delay);
+        syslog(LOG_INFO, "Starting Snapshotting for %s FPS with delay %d", fps, delay);
     }
 
     vc_dispmanx_rect_set(&rect1, 0, 0, vinfo.xres, vinfo.yres);
@@ -119,7 +120,7 @@ int process() {
         if (ret != 0) {
 		count +=1;
 		if ( count % 60 == 0 ) {
-			syslog(LOG_ERR, "Unable to snapshot %d. (%u)",ret, count);
+			syslog(LOG_ERR, "Unable to snapshot %d. (%u)", ret, count);
 		}
 		// for when tvservice -o has been called - check state some how?
 		vc_dispmanx_resource_delete(screen_resource);
@@ -134,7 +135,7 @@ int process() {
 	     }
 	     ret = vc_dispmanx_resource_read_data(screen_resource, &rect1, fbp, dpitch);
              if (ret != 0) {
-                 syslog(LOG_ERR, "Unable to read data from vc %d.",ret);
+                 syslog(LOG_ERR, "Unable to read data from vc %d.", ret);
              }
              usleep(delay);
         }
